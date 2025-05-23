@@ -1,0 +1,107 @@
+version: '3.8'
+
+services:
+  postgres:
+    image: postgres:15-alpine
+    container_name: trading-duel-postgres
+    environment:
+      POSTGRES_DB: trading_duel
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: password
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./migrations/init.sql:/docker-entrypoint-initdb.d/init.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    container_name: trading-duel-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # API Service
+  api:
+    build:
+      context: ./services/api
+      dockerfile: Dockerfile
+    container_name: trading-duel-api
+    ports:
+      - "8080:8080"
+    environment:
+      - DATABASE_URL=postgresql://postgres:password@postgres:5432/trading_duel
+      - REDIS_URL=redis://redis:6379
+      - JWT_SECRET=your-secret-key
+      - SOLANA_RPC_URL=https://api.mainnet-beta.solana.com
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # Oracle Service
+  oracle:
+    build:
+      context: ./services/oracle
+      dockerfile: Dockerfile
+    container_name: trading-duel-oracle
+    environment:
+      - DATABASE_URL=postgresql://postgres:password@postgres:5432/trading_duel
+      - REDIS_URL=redis://redis:6379
+      - SOLANA_RPC_URL=https://api.mainnet-beta.solana.com
+      - PROGRAM_ID=your-program-id
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # Twitter Bot
+  twitter-bot:
+    build:
+      context: ./services/twitter-bot
+      dockerfile: Dockerfile
+    container_name: trading-duel-twitter
+    environment:
+      - DATABASE_URL=postgresql://postgres:password@postgres:5432/trading_duel
+      - TWITTER_API_KEY=your-api-key
+      - TWITTER_API_SECRET=your-api-secret
+      - TWITTER_ACCESS_TOKEN=your-access-token
+      - TWITTER_ACCESS_SECRET=your-access-secret
+      - TWITTER_BEARER_TOKEN=your-bearer-token
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # Grafana for monitoring
+  grafana:
+    image: grafana/grafana:latest
+    container_name: trading-duel-grafana
+    ports:
+      - "3000:3000"
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./monitoring/grafana/dashboards:/etc/grafana/provisioning/dashboards
+      - ./monitoring/grafana/datasources:/etc/grafana/provisioning/datasources
+
+volumes:
+  postgres_data:
+  redis_data:
+  grafana_data: 

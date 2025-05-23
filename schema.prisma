@@ -1,0 +1,255 @@
+// schema.prisma
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id              String    @id @default(cuid())
+  walletAddress   String    @unique
+  twitterHandle   String?   @unique
+  twitterId       String?   @unique
+  username        String?
+  avatar          String?
+  bio             String?
+  
+  // Stats
+  totalDuels      Int       @default(0)
+  duelsWon        Int       @default(0)
+  duelsLost       Int       @default(0)
+  duelsDraw       Int       @default(0)
+  totalVolume     BigInt    @default(0)
+  totalEarnings   BigInt    @default(0)
+  winRate         Float     @default(0)
+  avgPnl          Float     @default(0)
+  
+  // Rankings
+  eloRating       Int       @default(1500)
+  rank            Int?
+  streak          Int       @default(0)
+  
+  // Relationships
+  createdDuels    Duel[]    @relation("CreatorDuels")
+  opponentDuels   Duel[]    @relation("OpponentDuels")
+  trades          Trade[]
+  notifications   Notification[]
+  achievements    UserAchievement[]
+  
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+  
+  @@index([eloRating])
+  @@index([twitterHandle])
+}
+
+model Duel {
+  id              String    @id @default(cuid())
+  onChainId       String    @unique
+  
+  // Participants
+  creatorId       String
+  creator         User      @relation("CreatorDuels", fields: [creatorId], references: [id])
+  opponentId      String?
+  opponent        User?     @relation("OpponentDuels", fields: [opponentId], references: [id])
+  
+  // Duel parameters
+  stakeAmount     BigInt
+  duration        Int       // seconds
+  status          DuelStatus
+  winner          DuelWinner?
+  
+  // Timestamps
+  createdAt       DateTime  @default(now())
+  acceptedAt      DateTime?
+  startedAt       DateTime?
+  endedAt         DateTime?
+  
+  // Trading data
+  creatorStartValue    BigInt?
+  creatorEndValue      BigInt?
+  opponentStartValue   BigInt?
+  opponentEndValue     BigInt?
+  creatorPnl           Float?
+  opponentPnl          Float?
+  
+  // Social data
+  challengeTweetId     String?
+  resultTweetId        String?
+  
+  // Token restrictions
+  allowedTokens        String[]  @default([])
+  
+  // Analytics
+  totalTrades          Int       @default(0)
+  totalVolume          BigInt    @default(0)
+  
+  // Relationships
+  trades              Trade[]
+  snapshots           DuelSnapshot[]
+  
+  @@index([status])
+  @@index([creatorId])
+  @@index([opponentId])
+  @@index([createdAt])
+}
+
+model Trade {
+  id              String    @id @default(cuid())
+  duelId          String
+  duel            Duel      @relation(fields: [duelId], references: [id])
+  userId          String
+  user            User      @relation(fields: [userId], references: [id])
+  
+  // Trade details
+  signature       String    @unique
+  inputToken      String
+  outputToken     String
+  inputAmount     BigInt
+  outputAmount    BigInt
+  dex             String    // raydium, meteora, jupiter
+  
+  // Calculated values
+  inputUsdValue   Float?
+  outputUsdValue  Float?
+  
+  timestamp       DateTime
+  
+  @@index([duelId])
+  @@index([userId])
+  @@index([timestamp])
+}
+
+model DuelSnapshot {
+  id              String    @id @default(cuid())
+  duelId          String
+  duel            Duel      @relation(fields: [duelId], references: [id])
+  
+  // Portfolio values at this moment
+  creatorValue    BigInt
+  opponentValue   BigInt
+  creatorPnl      Float
+  opponentPnl     Float
+  
+  timestamp       DateTime
+  
+  @@index([duelId])
+  @@index([timestamp])
+}
+
+model TokenPrice {
+  id              String    @id @default(cuid())
+  tokenAddress    String    @unique
+  symbol          String?
+  name            String?
+  price           Float
+  priceChange24h  Float?
+  volume24h       BigInt?
+  
+  updatedAt       DateTime  @updatedAt
+  
+  @@index([tokenAddress])
+}
+
+model Achievement {
+  id              String    @id @default(cuid())
+  name            String
+  description     String
+  icon            String
+  category        AchievementCategory
+  requirement     Json      // Dynamic requirements
+  points          Int
+  
+  users           UserAchievement[]
+}
+
+model UserAchievement {
+  id              String    @id @default(cuid())
+  userId          String
+  user            User      @relation(fields: [userId], references: [id])
+  achievementId   String
+  achievement     Achievement @relation(fields: [achievementId], references: [id])
+  
+  unlockedAt      DateTime  @default(now())
+  
+  @@unique([userId, achievementId])
+}
+
+model Notification {
+  id              String    @id @default(cuid())
+  userId          String
+  user            User      @relation(fields: [userId], references: [id])
+  
+  type            NotificationType
+  title           String
+  message         String
+  data            Json?     // Additional data
+  read            Boolean   @default(false)
+  
+  createdAt       DateTime  @default(now())
+  
+  @@index([userId])
+  @@index([read])
+}
+
+model Tournament {
+  id              String    @id @default(cuid())
+  name            String
+  description     String
+  
+  entryFee        BigInt?
+  prizePool       BigInt
+  maxParticipants Int
+  
+  startDate       DateTime
+  endDate         DateTime
+  
+  status          TournamentStatus
+  rules           Json
+  
+  createdAt       DateTime  @default(now())
+}
+
+enum DuelStatus {
+  PENDING
+  ACCEPTED
+  ACTIVE
+  SETTLING
+  SETTLED
+  CANCELLED
+  EXPIRED
+}
+
+enum DuelWinner {
+  CREATOR
+  OPPONENT
+  DRAW
+}
+
+enum NotificationType {
+  DUEL_CHALLENGE
+  DUEL_ACCEPTED
+  DUEL_STARTED
+  DUEL_ENDED
+  ACHIEVEMENT_UNLOCKED
+  LEADERBOARD_UPDATE
+}
+
+enum AchievementCategory {
+  TRADING
+  SOCIAL
+  VOLUME
+  STREAKS
+  SPECIAL
+}
+
+enum TournamentStatus {
+  UPCOMING
+  ACTIVE
+  COMPLETED
+  CANCELLED
+}
+
