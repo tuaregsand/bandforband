@@ -6,7 +6,8 @@ import WebSocket from 'ws';
 import http from 'http';
 import { z } from 'zod';
 import jwt from 'jsonwebtoken';
-import { Connection, PublicKey } from '@solana/web3.js';
+import { Connection, PublicKey, Keypair, Transaction } from '@solana/web3.js';
+import { AnchorProvider, BN } from '@coral-xyz/anchor';
 import { TradingDuelClient } from '../../../client/src/program';
 import { PrismaClient } from '@prisma/client';
 
@@ -18,6 +19,38 @@ const SOLANA_RPC_URL = process.env.SOLANA_RPC_URL || 'https://api.mainnet-beta.s
 // Initialize services
 const prisma = new PrismaClient();
 const connection = new Connection(SOLANA_RPC_URL);
+
+// Wallet for performing on-chain transactions
+let duelClient: TradingDuelClient | null = null;
+let serverKeypair: Keypair | null = null;
+
+try {
+  const secret = process.env.ORACLE_WALLET_PRIVATE_KEY;
+  if (secret) {
+    const secretBytes = Uint8Array.from(JSON.parse(secret));
+    serverKeypair = Keypair.fromSecretKey(secretBytes);
+    const wallet = {
+      publicKey: serverKeypair.publicKey,
+      signTransaction: async (tx: Transaction) => {
+        tx.partialSign(serverKeypair!);
+        return tx;
+      },
+      signAllTransactions: async (txs: Transaction[]) => {
+        return txs.map((tx) => {
+          tx.partialSign(serverKeypair!);
+          return tx;
+        });
+      },
+    };
+    const provider = new AnchorProvider(connection, wallet as any, {
+      commitment: 'confirmed',
+    });
+    duelClient = new TradingDuelClient(provider);
+  }
+} catch (err) {
+  console.error('Failed to initialize on-chain client:', err);
+}
+
 const app = express();
 const server = http.createServer(app);
 const wss = new WebSocket.Server({ server });
@@ -281,15 +314,28 @@ app.get('/api/users/:address/stats', async (req: Request, res: Response) => {
 });
 
 // Duel Routes
+
 app.post('/api/duels', authenticateToken, async (req: AuthRequest, res: Response) => {
   try {
     const duelData = CreateDuelSchema.parse(req.body);
 
-    // TODO: Create duel on-chain first
-    // For now, we'll create it in the database
+    if (!duelClient || !serverKeypair) {
+      return res.status(500).json({ error: 'On-chain client not configured' });
+    }
 
+    // Create duel on-chain first
+    const allowed = (duelData.allowedTokens || []).map((t) => new PublicKey(t));
+    const { duelPubkey } = await duelClient.createDuel(serverKeypair, {
+      stakeAmount: new BN(duelData.stakeAmount),
+      durationSeconds: new BN(duelData.duration),
+      allowedTokens: allowed,
+      opponent: duelData.opponentAddress ? new PublicKey(duelData.opponentAddress) : undefined,
+    });
+
+    // Persist duel with on-chain ID
     const duel = await prisma.duel.create({
       data: {
+        onChainId: duelPubkey.toString(),
         creatorAddress: req.user!.address,
         opponentAddress: duelData.opponentAddress,
         stakeAmount: duelData.stakeAmount,
@@ -297,7 +343,7 @@ app.post('/api/duels', authenticateToken, async (req: AuthRequest, res: Response
         allowedTokens: duelData.allowedTokens || [],
         status: duelData.opponentAddress ? 'ACCEPTED' : 'PENDING',
         createdAt: new Date(),
-      }
+      },
     });
 
     res.json(duel);
