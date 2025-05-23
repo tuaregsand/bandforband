@@ -1,4 +1,4 @@
-import { Connection, PublicKey, GetProgramAccountsFilter, Keypair } from '@solana/web3.js';
+import { Connection, PublicKey, Keypair } from '@solana/web3.js';
 import { BN } from '@coral-xyz/anchor';
 import { TradingDuelClient } from '../../../client/src/program';
 import { Jupiter } from '@jup-ag/api';
