@@ -12,15 +12,15 @@ import { PrismaClient } from '@prisma/client';
 
 // Environment configuration
 const PORT = process.env.PORT || 3001;
-const JWT_SECRET = process.env.JWT_SECRET || 'your-secret-key';
+let JWT_SECRET = process.env.JWT_SECRET || 'your-secret-key';
 const SOLANA_RPC_URL = process.env.SOLANA_RPC_URL || 'https://api.mainnet-beta.solana.com';
 
 // Initialize services
-const prisma = new PrismaClient();
+let prisma: PrismaClient;
 const connection = new Connection(SOLANA_RPC_URL);
 const app = express();
 const server = http.createServer(app);
-const wss = new WebSocket.Server({ server });
+let wss: WebSocket.Server | undefined;
 
 // Validation schemas
 const CreateDuelSchema = z.object({
@@ -481,36 +481,40 @@ interface WSMessage {
   data?: any;
 }
 
-wss.on('connection', (ws: WebSocketClient) => {
-  ws.subscriptions = new Set();
+function setupWebSocket() {
+  if (!wss) return;
+  wss.on('connection', (ws: WebSocketClient) => {
+    ws.subscriptions = new Set();
 
-  ws.on('message', (message: string) => {
-    try {
-      const data: WSMessage = JSON.parse(message);
+    ws.on('message', (message: string) => {
+      try {
+        const data: WSMessage = JSON.parse(message);
 
-      switch (data.type) {
-        case 'subscribe':
-          ws.subscriptions?.add(data.channel);
-          console.log(`Client subscribed to ${data.channel}`);
-          break;
+        switch (data.type) {
+          case 'subscribe':
+            ws.subscriptions?.add(data.channel);
+            console.log(`Client subscribed to ${data.channel}`);
+            break;
 
-        case 'unsubscribe':
-          ws.subscriptions?.delete(data.channel);
-          console.log(`Client unsubscribed from ${data.channel}`);
-          break;
+          case 'unsubscribe':
+            ws.subscriptions?.delete(data.channel);
+            console.log(`Client unsubscribed from ${data.channel}`);
+            break;
+        }
+      } catch (error) {
+        console.error('WebSocket message error:', error);
       }
-    } catch (error) {
-      console.error('WebSocket message error:', error);
-    }
-  });
+    });
 
-  ws.on('close', () => {
-    console.log('Client disconnected');
+    ws.on('close', () => {
+      console.log('Client disconnected');
+    });
   });
-});
+}
 
 // Broadcast functions
 function broadcastDuelUpdate(duelId: string, duelData: any) {
+  if (!wss) return;
   wss.clients.forEach((client: WebSocketClient) => {
     if (client.readyState === WebSocket.OPEN && client.subscriptions?.has(`duel:${duelId}`)) {
       client.send(JSON.stringify({
@@ -522,6 +526,7 @@ function broadcastDuelUpdate(duelId: string, duelData: any) {
 }
 
 function broadcastLeaderboardUpdate(leaderboard: any[]) {
+  if (!wss) return;
   wss.clients.forEach((client: WebSocketClient) => {
     if (client.readyState === WebSocket.OPEN && client.subscriptions?.has('leaderboard')) {
       client.send(JSON.stringify({
@@ -548,17 +553,28 @@ app.use('*', (req: Request, res: Response) => {
   res.status(404).json({ error: 'Route not found' });
 });
 
-// Start server
-server.listen(PORT, () => {
-  console.log(`🚀 Trading Duel API server running on port ${PORT}`);
-  console.log(`📊 WebSocket server ready for real-time updates`);
-});
+export function createApp(prismaClient: PrismaClient, jwtSecret: string) {
+  prisma = prismaClient;
+  JWT_SECRET = jwtSecret;
+  if (!wss) {
+    wss = new WebSocket.Server({ server });
+    setupWebSocket();
+  }
+  return app;
+}
 
-// Graceful shutdown
-process.on('SIGTERM', async () => {
-  console.log('SIGTERM received, shutting down gracefully');
-  await prisma.$disconnect();
-  process.exit(0);
-});
+if (require.main === module) {
+  createApp(new PrismaClient(), process.env.JWT_SECRET || 'your-secret-key');
+  server.listen(PORT, () => {
+    console.log(`🚀 Trading Duel API server running on port ${PORT}`);
+    console.log(`📊 WebSocket server ready for real-time updates`);
+  });
 
-export { app, server, wss }; 
+  process.on('SIGTERM', async () => {
+    console.log('SIGTERM received, shutting down gracefully');
+    await prisma.$disconnect();
+    process.exit(0);
+  });
+}
+
+export { app, server, wss };
