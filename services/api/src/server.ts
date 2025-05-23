@@ -7,6 +7,7 @@ import http from 'http';
 import { z } from 'zod';
 import jwt from 'jsonwebtoken';
 import { Connection, PublicKey } from '@solana/web3.js';
+import { createPublicKey, verify as verifyEd25519 } from 'crypto';
 import { TradingDuelClient } from '../../../client/src/program';
 import { PrismaClient } from '@prisma/client';
 
@@ -21,6 +22,44 @@ const connection = new Connection(SOLANA_RPC_URL);
 const app = express();
 const server = http.createServer(app);
 const wss = new WebSocket.Server({ server });
+
+// Minimal base58 decoder for signature verification
+const BASE58_ALPHABET = '123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz';
+function decodeBase58(value: string): Buffer {
+  const BASE = BASE58_ALPHABET.length;
+  const bytes: number[] = [0];
+
+  for (let i = 0; i < value.length; i++) {
+    const char = value[i];
+    const index = BASE58_ALPHABET.indexOf(char);
+    if (index < 0) {
+      throw new Error('Invalid base58 character');
+    }
+
+    let carry = index;
+    for (let j = 0; j < bytes.length; ++j) {
+      carry += bytes[j] * BASE;
+      bytes[j] = carry & 0xff;
+      carry >>= 8;
+    }
+    while (carry) {
+      bytes.push(carry & 0xff);
+      carry >>= 8;
+    }
+  }
+
+  // Deal with leading zeros
+  let leadingZeroCount = 0;
+  for (let i = 0; i < value.length && value[i] === '1'; i++) {
+    leadingZeroCount++;
+  }
+
+  const result = Buffer.from(bytes.reverse());
+  if (leadingZeroCount) {
+    return Buffer.concat([Buffer.alloc(leadingZeroCount), result]);
+  }
+  return result;
+}
 
 // Validation schemas
 const CreateDuelSchema = z.object({
@@ -102,8 +141,31 @@ app.post('/api/auth/connect-wallet', async (req: Request, res: Response) => {
   try {
     const { address, signature, message } = ConnectWalletSchema.parse(req.body);
 
-    // TODO: Verify signature with Solana wallet
-    // For now, we'll trust the client-side verification
+    const pubkey = new PublicKey(address);
+    const msgBuffer = Buffer.from(message, 'utf8');
+
+    let sigBuffer: Buffer;
+    try {
+      sigBuffer = decodeBase58(signature);
+    } catch (err) {
+      try {
+        sigBuffer = Buffer.from(signature, 'base64');
+      } catch (e) {
+        return res.status(400).json({ error: 'Invalid signature format' });
+      }
+    }
+
+    const derPrefix = Buffer.from('302a300506032b6570032100', 'hex');
+    const keyObject = createPublicKey({
+      key: Buffer.concat([derPrefix, pubkey.toBytes()]),
+      format: 'der',
+      type: 'spki'
+    });
+
+    const isValid = verifyEd25519(null, msgBuffer, keyObject, sigBuffer);
+    if (!isValid) {
+      return res.status(400).json({ error: 'Invalid signature' });
+    }
 
     // Find or create user
     let user = await prisma.user.findUnique({
